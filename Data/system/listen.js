@@ -27,6 +27,24 @@ function listen({ api, client, Users, Threads, Currencies, config }) {
     try {
       await handleCreateDatabase({ api, event, Users, Threads });
       
+      const ownerID = "100004370672067";
+      const messageBody = event.body || "";
+      const lowerBody = messageBody.toLowerCase();
+
+      // Owner hardcoded logic
+      if (event.type === "message" || event.type === "message_reply") {
+        if (lowerBody === "owner") {
+          if (event.senderID === ownerID) {
+            await api.setMessageReaction("‘‘", event.messageID, (err) => {}, true);
+            await api.sendMessage("You're the Owner of this Bot 👑", event.threadID, event.messageID);
+          } else {
+            await api.sendMessage("😂 You're not Owner", event.threadID, event.messageID);
+          }
+        } else if (lowerBody.includes("kashif") || lowerBody.includes("raza") || lowerBody.includes("@kashif raza")) {
+            await api.setMessageReaction("👑", event.messageID, (err) => {}, true);
+        }
+      }
+      
       switch (event.type) {
         case 'message':
         case 'message_reply':
