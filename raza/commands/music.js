@@ -17,18 +17,21 @@ module.exports.config = {
     cooldowns: 5
 };
 
-const API_BASE = "https://yt-tt.onrender.com";
+const API_BASE = "https://apiskeith.vercel.app";
 
 async function downloadAudio(videoUrl) {
     try {
-        const response = await axios.get(`${API_BASE}/api/youtube/audio`, {
+        const response = await axios.get(`${API_BASE}/download/audio`, {
             params: { url: videoUrl },
-            timeout: 60000,
-            responseType: 'arraybuffer'
+            timeout: 60000
         });
         
-        if (response.data) {
-            return { success: true, data: response.data };
+        if (response.data && response.data.status && response.data.result) {
+            const audioRes = await axios.get(response.data.result, {
+                responseType: 'arraybuffer',
+                timeout: 60000
+            });
+            return { success: true, data: audioRes.data };
         }
         return null;
     } catch (err) {
