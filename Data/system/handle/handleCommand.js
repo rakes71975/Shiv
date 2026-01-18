@@ -1,0 +1,262 @@
+const fs = require('fs-extra');
+const path = require('path');
+const stringSimilarity = require('string-similarity');
+const moment = require('moment-timezone');
+const logs = require('../../utility/logs');
+const Send = require('../../utility/send');
+
+async function handleCommand({ api, event, client, Users, Threads, Currencies, config }) {
+  const { threadID, senderID, body, messageID } = event;
+  
+  if (!body) return;
+  
+  const prefix = config.PREFIX || '.';
+  const prefixEnabled = config.PREFIX_ENABLED !== false;
+  
+  let commandName = '';
+  let args = [];
+  let hasPrefix = false;
+  
+  if (body.toLowerCase().startsWith(prefix.toLowerCase())) {
+    hasPrefix = true;
+    const withoutPrefix = body.slice(prefix.length).trim();
+    const parts = withoutPrefix.split(/\s+/);
+    commandName = parts.shift()?.toLowerCase() || '';
+    args = parts;
+  } else {
+    const parts = body.trim().split(/\s+/);
+    commandName = parts.shift()?.toLowerCase() || '';
+    args = parts;
+  }
+  
+  if (!commandName) {
+    if (hasPrefix) {
+      return await showBotInfo(api, event, client, Users, config);
+    }
+    return;
+  }
+  
+  let command = client.commands.get(commandName);
+  
+  if (!command) {
+    for (const [name, cmd] of client.commands) {
+      if (cmd.config.aliases && cmd.config.aliases.includes(commandName)) {
+        command = cmd;
+        commandName = name;
+        break;
+      }
+    }
+  }
+  
+  if (!command) {
+    if (hasPrefix) {
+      return await showSuggestion(api, event, client, Users, config, commandName);
+    }
+    return;
+  }
+  
+  const cmdConfig = command.config;
+  
+  if (cmdConfig.prefix === true && !hasPrefix) {
+    return;
+  }
+  
+  if (cmdConfig.prefix === false && hasPrefix) {
+    return;
+  }
+  
+  if (prefixEnabled && cmdConfig.prefix !== false && !hasPrefix) {
+    return;
+  }
+  
+  const isAdmin = config.ADMINBOT.includes(senderID);
+
+  // Manual tagging fallback for all commands
+  if (event.mentions && (Object.keys(event.mentions).length === 0 || event.mentions["0"])) {
+    const match = body.match(/@([^\s@]+)/);
+    if (match) {
+      const nameToSearch = match[1].toLowerCase();
+      const threadInfo = await Threads.getInfo(threadID);
+      if (threadInfo && threadInfo.participantIDs) {
+        for (const id of threadInfo.participantIDs) {
+          const uName = (await Users.getNameUser(id)) || "";
+          if (uName.toLowerCase().includes(nameToSearch)) {
+            event.mentions[id] = match[0];
+            if (event.mentions["0"]) delete event.mentions["0"];
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Final fallback: if mentions still empty, check if we're replying
+  if (event.type === "message_reply" && event.mentions && Object.keys(event.mentions).length === 0) {
+      if (event.messageReply && event.messageReply.senderID) {
+          event.mentions[event.messageReply.senderID] = event.messageReply.body || "replied_user";
+      }
+  }
+
+  // Log mentions for debugging
+  if (event.mentions && Object.keys(event.mentions).length > 0) {
+      logs.info('MENTIONS', `Detected mentions: ${JSON.stringify(event.mentions)}`);
+  }
+  
+  if (config.ADMIN_ONLY_MODE && !isAdmin) {
+    return api.sendMessage('Bot is in Admin Only mode. Only admins can use commands.', threadID, messageID);
+  }
+  
+  if (cmdConfig.adminOnly && !isAdmin) {
+    return api.sendMessage('This command is only for bot admins.', threadID, messageID);
+  }
+  
+  if (cmdConfig.groupOnly && !event.isGroup) {
+    return api.sendMessage('This command can only be used in groups.', threadID, messageID);
+  }
+  
+  if (Users.isBanned(senderID)) {
+    return api.sendMessage('You are banned from using this bot.', threadID, messageID);
+  }
+  
+  if (Threads.isBanned(threadID)) {
+    return api.sendMessage('This group is banned from using this bot.', threadID, messageID);
+  }
+  
+  const send = new Send(api, event);
+  const userName = await Users.getNameUser(senderID);
+  
+  logs.command(commandName, userName, threadID);
+  
+  try {
+    await command.run({
+      api,
+      event,
+      args,
+      send,
+      Users,
+      Threads,
+      Currencies,
+      config,
+      client,
+      commandName,
+      prefix
+    });
+  } catch (error) {
+    logs.error('COMMAND', `Error in ${commandName}:`, error.message);
+    api.sendMessage(`Command Error: ${error.message}`, threadID, messageID);
+  }
+}
+
+async function showBotInfo(api, event, client, Users, config) {
+  const { threadID, senderID, messageID } = event;
+  const userName = await Users.getNameUser(senderID);
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
+  const seconds = Math.floor(uptime % 60);
+  const time = moment().tz('Asia/Karachi').format('hh:mm:ss A || DD/MM/YYYY');
+  
+  const uniqueCommands = new Set();
+  if (client && client.commands) {
+    client.commands.forEach((cmd) => {
+      if (cmd.config && cmd.config.name) {
+        uniqueCommands.add(cmd.config.name.toLowerCase());
+      }
+    });
+  }
+  const commandCount = uniqueCommands.size || 102;
+  
+  const commandsFolder = path.join(__dirname, '../../../raza/commands');
+  let latestFile = 'None';
+  
+  try {
+    const files = fs.readdirSync(commandsFolder);
+    const allFiles = files
+      .filter(file => file.endsWith('.js'))
+      .map(file => ({
+        name: file,
+        time: fs.statSync(path.join(commandsFolder, file)).mtime.getTime()
+      }));
+    
+    if (allFiles.length > 0) {
+      latestFile = allFiles.sort((a, b) => b.time - a.time)[0].name;
+    }
+  } catch (e) {}
+  
+  const message = `╭─────────────────╮
+│  ${config.BOTNAME || 'RAZA BOT'}  
+├─────────────────┤
+│ 📅 ${time}
+│ 👤 ${userName}
+│ 📊 Commands: ${commandCount}
+│ 🔧 Prefix: ${config.PREFIX}
+│ ⏰ Uptime: ${hours}h ${minutes}m ${seconds}s
+│ 📁 Latest: ${latestFile}
+├─────────────────┤
+│ Type ${config.PREFIX}help for commands
+╰─────────────────╯`;
+  
+  api.sendMessage(message, threadID, (err, info) => {
+    if (!err && info && info.messageID) {
+      setTimeout(() => {
+        try { api.unsendMessage(info.messageID); } catch (e) {}
+      }, 15000);
+    }
+  }, messageID);
+}
+
+async function showSuggestion(api, event, client, Users, config, commandName) {
+  const { threadID, senderID, messageID } = event;
+  const allCommandNames = [...client.commands.keys()];
+  
+  if (allCommandNames.length === 0) return;
+  
+  const checker = stringSimilarity.findBestMatch(commandName, allCommandNames);
+  
+  if (checker.bestMatch.rating < 0.3) {
+    const userName = await Users.getNameUser(senderID);
+    const message = `╭─────────────────╮
+│ ❌ Command Not Found
+├─────────────────┤
+│ 👤 ${userName}
+│ ❓ "${commandName}" not found
+│ 💡 Type ${config.PREFIX}help for commands
+╰─────────────────╯`;
+    api.sendMessage(message, threadID, (err, info) => {
+      if (!err && info && info.messageID) {
+        setTimeout(() => {
+          try { api.unsendMessage(info.messageID); } catch (e) {}
+        }, 10000);
+      }
+    }, messageID);
+    return;
+  }
+  
+  const userName = await Users.getNameUser(senderID);
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
+  const seconds = Math.floor(uptime % 60);
+  const time = moment().tz('Asia/Karachi').format('hh:mm:ss A || DD/MM/YYYY');
+  
+  const message = `╭─────────────────╮
+│  ${config.BOTNAME || 'RAZA BOT'}  
+├─────────────────┤
+│ 📅 ${time}
+│ 👤 ${userName}
+│ ❓ Did you mean: ${config.PREFIX}${checker.bestMatch.target}?
+│ ⏰ Uptime: ${hours}h ${minutes}m ${seconds}s
+├─────────────────┤
+│ Type ${config.PREFIX}help for commands
+╰─────────────────╯`;
+  
+  api.sendMessage(message, threadID, (err, info) => {
+    if (!err && info && info.messageID) {
+      setTimeout(() => {
+        try { api.unsendMessage(info.messageID); } catch (e) {}
+      }, 15000);
+    }
+  }, messageID);
+}
+
+module.exports = handleCommand;
